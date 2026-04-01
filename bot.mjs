@@ -2,6 +2,7 @@ import { Client, GatewayDispatchEvents } from '@discordjs/core';
 import { REST } from '@discordjs/rest';
 import { WebSocketManager } from '@discordjs/ws';
 import { createCanvas } from 'canvas';
+import { promises as fs } from 'fs';
 
 const token = process.env['FLUXER_BOT_TOKEN'];
 
@@ -15,7 +16,8 @@ const client = new Client({ rest, gateway });
 
 const activeGames = new Map();
 const dailyLeaderboards = new Map();
-const completedUsersToday = new Set(); // Tracks users who have finished today's game
+const completedUsersToday = new Set();
+const activeCommunities = new Set();
 let dailyWordCache = { dateString: '', word: '' };
 
 const COLOURS = {
@@ -26,6 +28,21 @@ const COLOURS = {
     OUTLINE: '#3a3a3c',
     KEY_AVAIL: '#818384'
 };
+
+/**
+ * Writes the current community count to a local JSON file.
+ */
+async function updateStatsFile() {
+    try {
+        const stats = {
+            communityCount: activeCommunities.size,
+            lastUpdated: new Date().toISOString()
+        };
+        await fs.writeFile('bot_stats.json', JSON.stringify(stats, null, 2));
+    } catch (err) {
+        console.error("Failed to update the stats file:", err);
+    }
+}
 
 async function isValidWord(word) {
     try {
@@ -50,7 +67,6 @@ async function getDailyWord() {
         const data = await response.json();
         const secretWord = data.solution.toUpperCase();
         
-        // Update cache and wipe the leaderboards/completed lists for the new day
         dailyWordCache = { dateString: today, word: secretWord };
         dailyLeaderboards.clear();
         completedUsersToday.clear(); 
@@ -70,7 +86,6 @@ client.on(GatewayDispatchEvents.MessageCreate, async ({ api, data }) => {
 
     // 1. START GAME
     if (content === '!WORDLE' && data.guild_id) {
-        // We fetch the word first to ensure the cache (and completed list) resets if it's a new day
         const secretWord = await getDailyWord();
 
         if (activeGames.has(data.author.id)) {
@@ -81,7 +96,6 @@ client.on(GatewayDispatchEvents.MessageCreate, async ({ api, data }) => {
             return;
         }
 
-        // Check if the user has already finished today's challenge
         if (completedUsersToday.has(data.author.id)) {
             await api.channels.createMessage(data.channel_id, {
                 content: "You have already completed today's official Wordle! Come back tomorrow.",
@@ -143,7 +157,6 @@ client.on(GatewayDispatchEvents.MessageCreate, async ({ api, data }) => {
         const imageBuffer = await generateDMImage(game.guesses, game.word);
 
         if (isGameOver) {
-            // Lock the user out from playing again today
             completedUsersToday.add(data.author.id);
 
             const resultText = isWin 
@@ -188,6 +201,16 @@ client.on(GatewayDispatchEvents.MessageCreate, async ({ api, data }) => {
             });
         }
     }
+});
+
+client.on(GatewayDispatchEvents.GuildCreate, ({ data }) => {
+    activeCommunities.add(data.id);
+    updateStatsFile();
+});
+
+client.on(GatewayDispatchEvents.GuildDelete, ({ data }) => {
+    activeCommunities.delete(data.id);
+    updateStatsFile();
 });
 
 client.on(GatewayDispatchEvents.Ready, ({ data }) => {
